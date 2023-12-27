@@ -1,0 +1,163 @@
+---
+- name: Setup Intel General AI Environment
+  hosts: all
+  become: yes
+  vars:
+    workspace_path: "/home/Ayush/"  # Change this to the desired path
+    conda_installer_url: "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+    conda_env_file: "/home/test/ansible-script-General/env/Intel_AI.yml"
+    remote_conda_env_file: "/tmp/Intel_AI.yml"
+    conda_path: "/opt/miniconda3/bin"
+
+  tasks:
+    - name: Install git
+      apt:
+        name: git
+        state: present
+      register: git_installed
+
+    - name: Find git executable
+      command: which git
+      register: git_path
+      when: git_installed is changed
+
+    - name: Create workspace directory
+      file:
+        path: "{{ workspace_path }}"
+        state: directory
+
+    # Additional tasks for setting up Conda, creating environments, and running scripts should be added here.
+    # Some steps might require manual intervention or a different automation approach.
+    - name: Install Conda
+      block:
+        - name: Download Miniconda
+          get_url:
+            url: https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+            dest: /tmp/Miniconda3-latest-Linux-x86_64.sh
+            mode: 0550
+
+        - name: Create conda folder
+          become: True
+          file:
+            path: /opt/miniconda3
+            state: directory
+            mode: 755
+            recurse: yes
+
+        - name: Run the Miniconda installer
+          shell: /tmp/Miniconda3-latest-Linux-x86_64.sh -b -u -p /opt/miniconda3
+
+        - name: Remove the Miniconda installer
+          file:
+            state: absent
+            path: /tmp/Miniconda3-latest-Linux-x86_64.sh
+
+        - name: Add path and initialize conda
+          shell: "export PATH=/opt/miniconda3/bin:$PATH; conda init"
+          args:
+            executable: /bin/bash
+            
+        - name: Conda - read permission for all
+          become: True
+          file:
+            path: /opt/miniconda3
+            mode: a+r
+            recurse: yes
+
+        - name: Conda - execution permission for all
+          become: True
+          file:
+            path: /opt/miniconda3/bin
+            mode: a+x
+            recurse: yes
+
+      #Task will take approximately 15 mins to complete setting up the environment
+        - name: Copy Intel_AI.yml to remote host
+          copy:
+            src: "{{ conda_env_file }}"
+            dest: "{{ remote_conda_env_file }}"
+
+        - name: Create Conda environment from Intel_AI.yml
+          shell: conda env create -f "{{ remote_conda_env_file }}"
+          environment:
+            PATH: "{{ conda_path }}:{{ ansible_env.PATH }}"
+            WORKSPACE: "{{ workspace_path }}"
+          ignore_errors: yes
+
+    - name: Install Git
+      become: yes
+      apt:
+        name:
+          - git
+        state: present
+
+    - name: Find Python executable in Conda environment
+      become: yes
+      shell: /opt/miniconda3/bin/conda run -n Intel_AI which python
+      register: conda_python_executable
+      environment:
+        PATH: "/opt/miniconda3/envs/Intel_AI/bin:{{ ansible_env.PATH }}"
+        WORKSPACE: "{{ workspace_path }}"
+
+    - name: Install pip in Conda environment
+      become: yes
+      shell: /opt/miniconda3/bin/conda run -n Intel_AI python -m ensurepip
+      environment:
+        PATH: "/opt/miniconda3/envs/Intel_AI/bin:{{ ansible_env.PATH }}"
+        WORKSPACE: "{{ workspace_path }}"
+    
+    - name: Install gperftools
+      become: yes
+      block:
+        - name: Download gperftools
+          get_url:
+            url: "https://github.com/gperftools/gperftools/releases/download/gperftools-2.7.90/gperftools-2.7.90.tar.gz"
+            dest: "/tmp/gperftools-2.7.90.tar.gz"
+            mode: 0644
+
+        - name: Extract gperftools
+          unarchive:
+            src: "/tmp/gperftools-2.7.90.tar.gz"
+            dest: "/tmp"
+            remote_src: yes
+
+        - name: Configure gperftools
+          shell: "./configure --prefix=$HOME/.local"
+          args:
+            chdir: "/tmp/gperftools-2.7.90"
+
+        - name: Make gperftools
+          make:
+            chdir: "/tmp/gperftools-2.7.90"
+
+        - name: Install gperftools
+          make:
+            chdir: "/tmp/gperftools-2.7.90"
+            target: install
+
+    - name: Install 'transformers' package from hugging face channel via Conda
+      become: yes
+      shell: /opt/miniconda3/bin/conda install -n Intel_AI -c huggingface transformers --yes
+      environment:
+        PATH: "/opt/miniconda3/envs/Intel_AI/bin:{{ ansible_env.PATH }}"
+        WORKSPACE: "{{ workspace_path }}"
+    
+    - name: Get CPU architecture information
+      shell: lscpu | grep 'am'
+      register: cpu_info
+
+    - name: Print CPU architecture information
+      debug:
+        msg: "{{ cpu_info.stdout }}"
+
+    - name: Check PyTorch and Intel Extension for PyTorch versions
+      become: yes
+      shell: |
+        /opt/miniconda3/bin/conda run -n Intel_AI python -c "import torch; import intel_extension_for_pytorch as ipex; print('PyTorch Version:', torch.__version__); print('Intel Extension for PyTorch Version:', ipex.__version__);"
+      environment:
+        PATH: "/opt/miniconda3/envs/Intel_AI/bin:{{ ansible_env.PATH }}"
+      register: python_version 
+    
+    - name: Print Pytorch version and Intel Extension for PyTorch versions
+      debug:
+        msg: "{{ python_version.stdout }}"
